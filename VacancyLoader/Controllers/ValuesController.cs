@@ -53,7 +53,7 @@ namespace VacancyLoader.Controllers
         [HttpPost]
         public void Post([FromBody]string value)
         {
-            throw new NotSupportedException();
+            throw new NotSupportedException(); 
         }
 
         // PUT api/values/5
