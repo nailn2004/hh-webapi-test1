@@ -39,7 +39,7 @@ namespace VacancyLoader.Controllers
                 Vacancy[] Vacancies = GetVacancies();
                 return Vacancies;
             }
-            catch (Exception e)
+            catch
             {
                 Response.StatusCode = (int)HttpStatusCode.BadRequest;                      
                 return null;
@@ -56,7 +56,7 @@ namespace VacancyLoader.Controllers
                 FillVacancyFields(vacancy);
                 return vacancy;
             }
-            catch (Exception e)
+            catch
             {
                 Response.StatusCode = (int)HttpStatusCode.BadRequest;
                 return null;
