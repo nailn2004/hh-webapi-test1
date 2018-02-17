@@ -34,17 +34,33 @@ namespace VacancyLoader.Controllers
         [HttpGet]
         public IEnumerable<Vacancy> Get()
         {
-            Vacancy[] Vacancies = GetVacancies();
-            return Vacancies;
-        }
+            try
+            {
+                Vacancy[] Vacancies = GetVacancies();
+                return Vacancies;
+            }
+            catch (Exception e)
+            {
+                Response.StatusCode = (int)HttpStatusCode.BadRequest;                      
+                return null;
+            }
+    }
 
-        // GET api/values/5
-        [HttpGet("{id}")]
+    // GET api/values/5
+    [HttpGet("{id}")]
         public Vacancy Get(int id)
         {
-            Vacancy vacancy = new Vacancy(id);
-            FillVacancyFields(vacancy);
-            return vacancy;
+            try
+            {
+                Vacancy vacancy = new Vacancy(id);
+                FillVacancyFields(vacancy);
+                return vacancy;
+            }
+            catch (Exception e)
+            {
+                Response.StatusCode = (int)HttpStatusCode.BadRequest;
+                return null;
+            }
         }
 
         
