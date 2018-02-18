@@ -11,6 +11,7 @@ using AngleSharp.Parser.Html;
 using AngleSharp.Dom;
 using Microsoft.Extensions.Configuration;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.EntityFrameworkCore;
 
 namespace VacancyLoader.Controllers
 {
@@ -18,6 +19,7 @@ namespace VacancyLoader.Controllers
     public class ValuesController : Controller
     {
         public IConfigurationRoot Configuration { get; }
+        private readonly VacancyDbContext _vacancyDbContext;
 
         public ValuesController(IHostingEnvironment env)
         {            
@@ -27,6 +29,12 @@ namespace VacancyLoader.Controllers
                .AddJsonFile($"appsettings.{env.EnvironmentName}.json", optional: true)
                .AddEnvironmentVariables();
             Configuration = builder.Build();
+            
+            var optionsBuilder = new DbContextOptionsBuilder<VacancyDbContext>();
+            var options = optionsBuilder
+                    .UseSqlServer(Configuration.GetConnectionString("VacancyDbContext"))
+                    .Options;
+            _vacancyDbContext = new VacancyDbContext(options);
         }
 
 
@@ -34,33 +42,94 @@ namespace VacancyLoader.Controllers
         [HttpGet]
         public IEnumerable<Vacancy> Get()
         {
+            List<Vacancy> vacancies;
             try
             {
-                Vacancy[] Vacancies = GetVacancies();
-                return Vacancies;
+                vacancies = GetVacancies();
             }
             catch
             {
-                Response.StatusCode = (int)HttpStatusCode.BadRequest;                      
-                return null;
+                vacancies = null;
             }
-    }
-
-    // GET api/values/5
-    [HttpGet("{id}")]
-        public Vacancy Get(int id)
-        {
-            try
+            if (vacancies != null)
             {
-                Vacancy vacancy = new Vacancy(id);
-                FillVacancyFields(vacancy);
-                return vacancy;
+                // Использование транзакции, иначе при удалении и вставке данных создаются разные транзакции
+                using (var transaction = _vacancyDbContext.Database.BeginTransaction())
+                {
+                    try
+                    {
+                        _vacancyDbContext.Vacancy.RemoveRange(_vacancyDbContext.Vacancy);
+                        _vacancyDbContext.SaveChanges();
+                        _vacancyDbContext.Vacancy.AddRange(vacancies);
+                        _vacancyDbContext.SaveChanges();
+                        transaction.Commit();
+                    }
+                    catch
+                    {
+                        transaction.Rollback();
+                        throw;
+                    }
+                }                
             }
+            else
+            {
+                vacancies = _vacancyDbContext.Vacancy.Take(50).ToList();
+            }
+            return vacancies;
+
+            /*}
             catch
             {
                 Response.StatusCode = (int)HttpStatusCode.BadRequest;
                 return null;
+            }*/
+            
+        }
+
+        // GET api/values/5
+        [HttpGet("{id}")]
+        public Vacancy Get(int id)
+        {
+            Vacancy vacancy;
+            try
+            {
+                vacancy = new Vacancy(id);
+                FillVacancyFields(vacancy);
             }
+            catch
+            {
+                vacancy = null;
+            }
+            if (vacancy != null)
+            {
+                // Использование транзакции, иначе при удалении и вставке данных создаются разные транзакции
+                using (var transaction = _vacancyDbContext.Database.BeginTransaction())
+                {
+                    try
+                    {
+                        _vacancyDbContext.Vacancy.Remove(vacancy);
+                        _vacancyDbContext.SaveChanges();
+                        _vacancyDbContext.Vacancy.Add(vacancy);
+                        _vacancyDbContext.SaveChanges();
+                    }
+                    catch
+                    {
+                        transaction.Rollback();
+                        throw;
+                    }
+                }
+            }
+            else
+            {
+                vacancy = _vacancyDbContext.Vacancy.FirstOrDefault(v => v.VacancyId == id);
+            }
+            return vacancy;
+            /*}
+            catch
+            {
+                Response.StatusCode = (int)HttpStatusCode.BadRequest;
+                return null;
+            }*/
         }
 
         
@@ -114,7 +183,7 @@ namespace VacancyLoader.Controllers
 
         // Получение списка вакансий
         [NonAction]
-        protected Vacancy[] GetVacancies()
+        protected List<Vacancy> GetVacancies()
         {
             string html = GetHtmlText(Configuration["UrlOfList"]);
 
@@ -125,21 +194,16 @@ namespace VacancyLoader.Controllers
             {
                 if (i++ == 0) continue; // первый элемент не отображается на странице в браузере, его формат нестандартный
                                 
-                int vacancyId = -1;
+                int vacancyId;
                 
-                // Получение заголовка
-                var headerElements = vacancyElement.QuerySelectorAll("a").Where(
-                    elem => elem.GetAttribute("data-qa") == "vacancy-serp__vacancy-title"
-                );
-                foreach (IElement elem in headerElements)
-                {
-                    // Получение Id
-                    string href = elem.GetAttribute("href");
-                    vacancyId = int.Parse(href.Substring(href.LastIndexOf('/') + 1));                    
-                }
-
-                if (vacancyId != -1)
-                {
+                // Получение заголовка для нахождения Id
+                var headerElement = vacancyElement.QuerySelectorAll("a")
+                        .Where(elem => elem.GetAttribute("data-qa") == "vacancy-serp__vacancy-title")
+                        .FirstOrDefault();
+                // Получение Id
+                if (headerElement != null) {                     
+                    string href = headerElement.GetAttribute("href");
+                    vacancyId = int.Parse(href.Substring(href.LastIndexOf('/') + 1));
                     Vacancy vacancy = new Vacancy(vacancyId);
                     VacanciesList.Add(vacancy);
                 }
@@ -147,9 +211,10 @@ namespace VacancyLoader.Controllers
                     throw new Exception("error: 'VacancyId' not found");
             }
 
+            // Загрузка информации для каждого объекта по имеющимся Id, загруженным из списка
             Parallel.ForEach<Vacancy>(VacanciesList, new ParallelOptions { MaxDegreeOfParallelism = 10 }, FillVacancyFields);
 
-            return VacanciesList.ToArray();
+            return VacanciesList;
         }
 
         // Заполнение полей объекта Vacancy по имеющемуся VacancyId
@@ -173,7 +238,8 @@ namespace VacancyLoader.Controllers
                 vacancy.Salary = angle.QuerySelector("p.vacancy-salary").TextContent.Trim();
 
             // Получение контактного лица
-            var ContactPersons = angle.QuerySelectorAll("p").Where(elem => elem.GetAttribute("data-qa") == "vacancy-contacts__fio");
+            var ContactPersons = angle.QuerySelectorAll("p")
+                    .Where(elem => elem.GetAttribute("data-qa") == "vacancy-contacts__fio");
             foreach (IElement elem in ContactPersons)
             {
                 if (vacancy.ContactPerson == null)
@@ -184,7 +250,8 @@ namespace VacancyLoader.Controllers
             }
 
             // Получение телефона
-            var ContactPhones = angle.QuerySelectorAll("p").Where(elem => elem.GetAttribute("data-qa") == "vacancy-contacts__phone");
+            var ContactPhones = angle.QuerySelectorAll("p")
+                    .Where(elem => elem.GetAttribute("data-qa") == "vacancy-contacts__phone");
             foreach (IElement elem in ContactPhones)
             {
                 if (vacancy.Phone == null)
@@ -195,14 +262,17 @@ namespace VacancyLoader.Controllers
             }
 
             // Получение типа занятости
-            var EmploymentTypes = angle.QuerySelectorAll("span").Where(elem => elem.GetAttribute("itemprop") == "employmentType");
+            var EmploymentTypes = angle.QuerySelectorAll("span")
+                    .Where(elem => elem.GetAttribute("itemprop") == "employmentType");
             foreach (IElement elem in EmploymentTypes)
             {
                 vacancy.EmploymentType = elem.TextContent.Trim();
             }
 
-            // Получение описания
-            var Descriptions = angle.QuerySelectorAll("div").Where(elem => elem.GetAttribute("data-qa") == "vacancy-description");
+            // Получение описания (пока теги html остаются как есть 
+            // для возможности форматирования при отображении данных)
+            var Descriptions = angle.QuerySelectorAll("div")
+                    .Where(elem => elem.GetAttribute("data-qa") == "vacancy-description");
             foreach (IElement elem in Descriptions)
             {
                 vacancy.Description = elem.InnerHtml;
